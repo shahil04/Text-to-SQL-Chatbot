@@ -1,6 +1,8 @@
 import os
 import json
 import re
+from pathlib import Path
+
 import streamlit as st
 import pandas as pd
 
@@ -16,12 +18,6 @@ from langchain_openai import ChatOpenAI
 
 load_dotenv()
 
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_NAME = os.getenv("DB_NAME")
-
 # ===========================
 # Streamlit Config
 # ===========================
@@ -32,34 +28,54 @@ st.set_page_config(
     layout="wide"
 )
 
+DB_DEFAULTS = {
+    "db_host": os.getenv("DB_HOST", ""),
+    "db_port": os.getenv("DB_PORT", "3306"),
+    "db_user": os.getenv("DB_USER", ""),
+    "db_password": os.getenv("DB_PASSWORD", ""),
+    "db_name": os.getenv("DB_NAME", ""),
+}
+
+for key, default in DB_DEFAULTS.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
+
 st.title("🗄️ Text-to-SQL Assistant")
-
-# ===========================
-# Database Connection
-# ===========================
-
-DATABASE_URL = URL.create(
-    "mysql+pymysql",
-    username=DB_USER,
-    password=DB_PASSWORD,
-    host=DB_HOST,
-    port=int(DB_PORT) if DB_PORT else 3306,
-    database=DB_NAME,
-)
-
-engine = create_engine(DATABASE_URL)
 
 # ===========================
 # Extract Schema
 # ===========================
 
-@st.cache_data
-def extract_schema():
+def create_database_engine(host, port, user, password, database):
+
+    if not host.strip() or not user.strip() or not database.strip():
+        raise ValueError("Enter the MySQL host, user, and database name.")
+
+    try:
+        port_number = int(port)
+    except ValueError as error:
+        raise ValueError("MySQL port must be a number between 1 and 65535.") from error
+
+    if not 1 <= port_number <= 65535:
+        raise ValueError("MySQL port must be a number between 1 and 65535.")
+
+    database_url = URL.create(
+        "mysql+pymysql",
+        username=user.strip(),
+        password=password,
+        host=host.strip(),
+        port=port_number,
+        database=database.strip(),
+    )
+    return create_engine(database_url)
+
+
+def extract_schema(engine, database_name):
 
     inspector = inspect(engine)
 
     schema = {
-        "database": DB_NAME,
+        "database": database_name,
         "tables": []
     }
 
@@ -102,11 +118,43 @@ def extract_schema():
             })
 
         schema["tables"].append(table_info)
-
-    with open("schema.json", "w") as f:
-        json.dump(schema, f, indent=4)
-
     return schema
+
+
+def schema_file_path(database_name):
+
+    safe_database_name = re.sub(
+        r"[^A-Za-z0-9_-]+",
+        "_",
+        database_name.strip(),
+    ).strip("_")
+
+    if not safe_database_name:
+        raise ValueError("Database name cannot be used to create a schema filename.")
+
+    return Path(__file__).resolve().parent / f"schema_{safe_database_name}.json"
+
+
+def save_schema(schema, database_name):
+
+    path = schema_file_path(database_name)
+    with path.open("w", encoding="utf-8") as schema_file:
+        json.dump(schema, schema_file, indent=4)
+
+    return path
+
+
+def load_schema(database_name):
+
+    path = schema_file_path(database_name)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Schema file {path.name} is missing. Save the database settings again."
+        )
+
+    with path.open("r", encoding="utf-8") as schema_file:
+        return json.load(schema_file)
+
 
 # ===========================
 # Clean SQL
@@ -212,11 +260,12 @@ def validate_model_for_provider(provider, model_name):
             "OpenAI requires an OpenAI model name, for example gpt-4o-mini."
         )
 
-# ===========================
-# Load Schema
-# ===========================
 
-schema = extract_schema()
+default_models = {
+    "OpenAI": "gpt-4o-mini",
+    "Gemini": "gemini-3.5-flash",
+    "Groq": "openai/gpt-oss-120b"
+}
 
 # ===========================
 # Sidebar
@@ -224,64 +273,118 @@ schema = extract_schema()
 
 with st.sidebar:
 
-    st.header("Database")
-
-    st.success(f"MySQL Database\n\n{DB_NAME}")
-
-    st.header("AI Provider")
-
-    provider = st.selectbox(
-        "Choose a provider",
-        ["OpenAI", "Gemini", "Groq"],
-        key="provider"
-    )
-
-    default_models = {
-        "OpenAI": "gpt-4o-mini",
-        "Gemini": "gemini-3.5-flash",
-        "Groq": "openai/gpt-oss-120b"
-    }
-
-    model_state_key = f"model_name_{provider.lower()}"
-
-    if model_state_key not in st.session_state:
-        st.session_state[model_state_key] = default_models[provider]
-
-    settings_page = st.radio(
-        "AI settings",
-        ["Add AI Keys", "Model Name"],
+    settings_tab = st.radio(
+        "Settings",
+        ["Database", "AI Provider"],
         horizontal=True,
         label_visibility="collapsed"
     )
 
-    if settings_page == "Add AI Keys":
-        api_key_name = {
-            "OpenAI": "OPENAI_API_KEY",
-            "Gemini": "GOOGLE_API_KEY",
-            "Groq": "GROQ_API_KEY"
-        }[provider]
+    if settings_tab == "Database":
+        st.header("MySQL Database")
+        st.caption("These settings are kept only for this browser session.")
 
-        st.text_input(
-            f"{provider} API key",
-            type="password",
-            value=os.getenv(api_key_name, ""),
-            key=f"api_key_{provider.lower()}",
-            help="Your key is used for this Streamlit session and is not saved by the app."
-        )
+        st.text_input("Host", key="db_host")
+        st.text_input("Port", key="db_port")
+        st.text_input("User", key="db_user")
+        st.text_input("Password", type="password", key="db_password")
+        st.text_input("Database name", key="db_name")
+
+        if st.button("Save database settings"):
+            try:
+                saved_database = {
+                    "host": st.session_state.db_host,
+                    "port": st.session_state.db_port,
+                    "user": st.session_state.db_user,
+                    "password": st.session_state.db_password,
+                    "name": st.session_state.db_name.strip(),
+                }
+                schema_engine = create_database_engine(
+                    saved_database["host"],
+                    saved_database["port"],
+                    saved_database["user"],
+                    saved_database["password"],
+                    saved_database["name"],
+                )
+                schema = extract_schema(schema_engine, saved_database["name"])
+                schema_path = save_schema(schema, saved_database["name"])
+                st.session_state.saved_database = saved_database
+                st.success(
+                    f"Database settings saved for this session. "
+                    f"Schema saved to {schema_path.name}."
+                )
+            except Exception as error:
+                st.error(f"Could not save database settings: {error}")
+
+        if st.checkbox("Show Schema"):
+            try:
+                schema_engine = create_database_engine(
+                    st.session_state.db_host,
+                    st.session_state.db_port,
+                    st.session_state.db_user,
+                    st.session_state.db_password,
+                    st.session_state.db_name,
+                )
+                schema = extract_schema(
+                    schema_engine,
+                    st.session_state.db_name.strip(),
+                )
+                st.json(schema)
+            except Exception as error:
+                st.error(str(error))
     else:
-        st.text_input(
-            "Model name",
-            key=model_state_key,
-            help=f"Default: {default_models[provider]}"
+
+        st.header("AI Provider")
+
+        provider = st.selectbox(
+            "Choose a provider",
+            ["OpenAI", "Gemini", "Groq"],
+            key="provider"
         )
 
-    api_key = st.session_state.get(f"api_key_{provider.lower()}", "")
-    model_name = st.session_state.get(model_state_key, default_models[provider])
+        model_state_key = f"model_name_{provider.lower()}"
 
-    if st.checkbox("Show Schema"):
+        if model_state_key not in st.session_state:
+            st.session_state[model_state_key] = default_models[provider]
 
-        st.json(schema)
+        ai_settings_page = st.radio(
+            "AI settings",
+            ["Add AI Keys", "Model Name"],
+            horizontal=True,
+            label_visibility="collapsed"
+        )
 
+        if ai_settings_page == "Add AI Keys":
+            api_key_name = {
+                "OpenAI": "OPENAI_API_KEY",
+                "Gemini": "GEMINI_API_KEY",
+                "Groq": "GROQ_API_KEY"
+            }[provider]
+
+            st.text_input(
+                f"{provider} API key",
+                type="password",
+                value=os.getenv(
+                    api_key_name,
+                    os.getenv("GOOGLE_API_KEY", "") if provider == "Gemini" else "",
+                ),
+                key=f"api_key_{provider.lower()}",
+                help="Your key is used for this Streamlit session and is not saved by the app."
+            )
+        else:
+            st.text_input(
+                "Model name",
+                key=model_state_key,
+                help=f"Default: {default_models[provider]}"
+            )
+
+provider = st.session_state.get("provider", "OpenAI")
+model_state_key = f"model_name_{provider.lower()}"
+if model_state_key not in st.session_state:
+    st.session_state[model_state_key] = default_models[provider]
+
+api_key = st.session_state.get(f"api_key_{provider.lower()}", "")
+model_name = st.session_state.get(model_state_key, default_models[provider])
 # ===========================
 # User Question
 # ===========================
@@ -319,9 +422,23 @@ if st.button("Generate SQL"):
 
     llm = create_llm(provider, api_key.strip(), model_name.strip())
 
-    schema_text = json.dumps(schema, indent=2)
+    try:
+        saved_database = st.session_state.get("saved_database")
+        if not saved_database:
+            st.error("Save valid database settings in the Database tab first.")
+            st.stop()
 
-    prompt = f"""
+        engine = create_database_engine(
+            saved_database["host"],
+            saved_database["port"],
+            saved_database["user"],
+            saved_database["password"],
+            saved_database["name"],
+        )
+        schema = load_schema(saved_database["name"])
+        schema_text = json.dumps(schema, indent=2)
+
+        prompt = f"""
 You are an expert MySQL developer. Generate read-only queries only.
 
 Database Schema
@@ -347,13 +464,12 @@ Question
 SQL
 """
 
-    with st.spinner("Generating SQL..."):
+        with st.spinner("Generating SQL..."):
 
-        response = llm.invoke(prompt)
+            response = llm.invoke(prompt)
 
-        sql = clean_sql(response.content)
+            sql = clean_sql(response.content)
 
-    try:
         validate_sql(sql)
 
         st.subheader("Generated SQL")
@@ -370,6 +486,10 @@ SQL
         explanation_prompt = f"""
 You are a helpful assistant.
 
+Database Schema
+
+{schema_text}
+
 User Question
 
 {question}
@@ -378,7 +498,7 @@ SQL Result
 
 {df.to_markdown(index=False)}
 
-Explain the answer in simple English.
+Explain the answer in simple English at 5 lines.
 """
 
         answer = llm.invoke(explanation_prompt)
