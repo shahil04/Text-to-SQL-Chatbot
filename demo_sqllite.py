@@ -7,6 +7,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, inspect
 
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
 # ===========================
@@ -37,15 +38,6 @@ st.title("🗄️ Text-to-SQL Assistant (SQLite)")
 DATABASE_URL = f"sqlite:///{DB_NAME}"
 
 engine = create_engine(DATABASE_URL)
-
-# ===========================
-# LLM
-# ===========================
-
-llm = ChatOpenAI(
-    model="gpt-4o-mini",
-    temperature=0
-)
 
 # ===========================
 # Extract Database Schema
@@ -112,6 +104,25 @@ def extract_schema():
 
 def clean_sql(sql):
 
+    if isinstance(sql, list):
+        parts = []
+
+        for block in sql:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+            else:
+                raise TypeError(
+                    "SQL response content must contain only text blocks."
+                )
+
+        sql = "".join(parts)
+    elif not isinstance(sql, str):
+        raise TypeError(
+            "SQL response content must be a string or a list of text blocks."
+        )
+
     sql = re.sub(r"```sql", "", sql, flags=re.IGNORECASE)
     sql = sql.replace("```", "")
 
@@ -147,6 +158,52 @@ def validate_sql(sql):
             )
 
 
+def create_llm(provider, api_key, model_name):
+
+    if provider == "Gemini":
+        return ChatGoogleGenerativeAI(
+            model=model_name,
+            google_api_key=api_key,
+            temperature=0
+        )
+
+    if provider == "Groq":
+        return ChatOpenAI(
+            model=model_name,
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1",
+            temperature=0
+        )
+
+    return ChatOpenAI(
+        model=model_name,
+        api_key=api_key,
+        temperature=0
+    )
+
+
+def validate_model_for_provider(provider, model_name):
+
+    model_name = model_name.strip().lower()
+
+    if provider == "Gemini" and not model_name.startswith("gemini-"):
+        raise ValueError(
+            "Gemini requires a Gemini model name, for example "
+            "gemini-2.0-flash."
+        )
+
+    if provider == "Groq" and model_name.startswith(("gpt-", "gemini-")):
+        raise ValueError(
+            "Groq requires a Groq-supported model name, for example "
+            "meta-llama/llama-prompt-guard-2-22m"
+        )
+
+    if provider == "OpenAI" and not model_name.startswith(("gpt-", "o1", "o3", "o4")):
+        raise ValueError(
+            "OpenAI requires an OpenAI model name, for example gpt-4o-mini."
+        )
+
+
 # ===========================
 # Load Schema
 # ===========================
@@ -162,6 +219,56 @@ with st.sidebar:
     st.header("Database")
 
     st.success(f"SQLite Database\n\n{DB_NAME}")
+
+    st.header("AI Provider")
+
+    provider = st.selectbox(
+        "Choose a provider",
+        ["OpenAI", "Gemini", "Groq"],
+        key="provider"
+    )
+
+    default_models = {
+        "OpenAI": "gpt-4o-mini",
+        "Gemini": "gemini-3.5-flash",
+        "Groq": "openai/gpt-oss-120b"
+    }
+
+    model_state_key = f"model_name_{provider.lower()}"
+
+    if model_state_key not in st.session_state:
+        st.session_state[model_state_key] = default_models[provider]
+
+    settings_page = st.radio(
+        "AI settings",
+        ["Add AI Keys", "Model Name"],
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+
+    if settings_page == "Add AI Keys":
+        api_key_name = {
+            "OpenAI": "OPENAI_API_KEY",
+            "Gemini": "GOOGLE_API_KEY",
+            "Groq": "GROQ_API_KEY"
+        }[provider]
+
+        api_key = st.text_input(
+            f"{provider} API key",
+            type="password",
+            value=os.getenv(api_key_name, ""),
+            key=f"api_key_{provider.lower()}",
+            help="Your key is used for this Streamlit session and is not saved by the app."
+        )
+    else:
+        model_name = st.text_input(
+            "Model name",
+            key=model_state_key,
+            help=f"Default: {default_models[provider]}"
+        )
+
+    api_key = st.session_state.get(f"api_key_{provider.lower()}", "")
+    model_name = st.session_state.get(model_state_key, default_models[provider])
 
     if st.checkbox("Show Schema"):
 
@@ -191,6 +298,26 @@ if st.button("Generate SQL"):
         st.warning("Please enter a question.")
 
         st.stop()
+
+    if not api_key.strip():
+
+        st.error(f"Enter a {provider} API key in the sidebar.")
+
+        st.stop()
+
+    if not model_name.strip():
+
+        st.error("Enter a model name in the Model Name section of the sidebar.")
+
+        st.stop()
+
+    try:
+        validate_model_for_provider(provider, model_name)
+    except ValueError as error:
+        st.error(str(error))
+        st.stop()
+
+    llm = create_llm(provider, api_key.strip(), model_name.strip())
 
     schema_text = json.dumps(schema, indent=2)
 
