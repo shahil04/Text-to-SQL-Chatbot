@@ -42,6 +42,13 @@ for key, default in DB_DEFAULTS.items():
 
 st.title("🗄️ Text-to-SQL Assistant")
 
+app_mode = st.radio(
+    "Choose a section",
+    ["Demo", "Real Database"],
+    horizontal=True,
+    key="database_mode"
+)
+
 # ===========================
 # Extract Schema
 # ===========================
@@ -154,6 +161,19 @@ def load_schema(database_name):
 
     with path.open("r", encoding="utf-8") as schema_file:
         return json.load(schema_file)
+
+
+if app_mode == "Demo":
+    demo_database_path = Path(__file__).resolve().parent / "uber.db"
+    if not demo_database_path.is_file():
+        st.error(f"Demo SQLite database was not found: {demo_database_path.name}")
+        st.stop()
+
+    engine = create_engine(URL.create("sqlite", database=str(demo_database_path)))
+    schema = extract_schema(engine, demo_database_path.stem)
+else:
+    engine = None
+    schema = None
 
 
 # ===========================
@@ -272,25 +292,111 @@ default_models = {
 # ===========================
 
 with st.sidebar:
-
-    settings_tab = st.radio(
-        "Settings",
-        ["Database", "AI Provider"],
-        horizontal=True,
-        label_visibility="collapsed"
+    st.header("AI Provider")
+    provider = st.selectbox(
+        "Choose a provider",
+        ["OpenAI", "Gemini", "Groq"],
+        key="provider"
     )
 
-    if settings_tab == "Database":
-        st.header("MySQL Database")
-        st.caption("These settings are kept only for this browser session.")
+    model_state_key = f"model_name_{provider.lower()}"
+    api_key_state_key = f"api_key_{provider.lower()}"
+    if model_state_key not in st.session_state:
+        st.session_state[model_state_key] = default_models[provider]
+    if api_key_state_key not in st.session_state:
+        api_key_name = {
+            "OpenAI": "OPENAI_API_KEY",
+            "Gemini": "GEMINI_API_KEY",
+            "Groq": "GROQ_API_KEY"
+        }[provider]
+        st.session_state[api_key_state_key] = os.getenv(
+            api_key_name,
+            os.getenv("GOOGLE_API_KEY", "") if provider == "Gemini" else "",
+        )
 
+    st.text_input(
+        "Model name",
+        key=model_state_key,
+        help=f"Default: {default_models[provider]}"
+    )
+    st.text_input(
+        f"{provider} API key",
+        type="password",
+        key=api_key_state_key,
+        help="The key is stored only in this Streamlit session."
+    )
+
+    if st.button("Save AI settings for this session"):
+        try:
+            current_model = st.session_state[model_state_key].strip()
+            current_api_key = st.session_state[api_key_state_key].strip()
+            if not current_api_key:
+                raise ValueError(f"Enter a {provider} API key.")
+            if not current_model:
+                raise ValueError("Enter a model name.")
+
+            validate_model_for_provider(provider, current_model)
+            st.session_state.saved_ai = {
+                "provider": provider,
+                "model_name": current_model,
+                "api_key": current_api_key,
+            }
+            st.success("AI settings saved for this session.")
+        except ValueError as error:
+            st.error(f"Could not save AI settings: {error}")
+
+    saved_ai = st.session_state.get("saved_ai")
+    if saved_ai:
+        st.caption(
+            f"Session-saved AI: {saved_ai['provider']} / {saved_ai['model_name']}"
+        )
+    else:
+        st.caption("AI settings have not been saved for this session.")
+
+    st.divider()
+    st.header("Database")
+    st.caption("Database settings are saved only for this session.")
+
+    if app_mode == "Demo":
+        st.subheader("SQLite Demo")
+        st.success("Using bundled database: uber.db")
+
+        if st.button("Save demo database for this session"):
+            try:
+                demo_database_path = Path(__file__).resolve().parent / "uber.db"
+                if not demo_database_path.is_file():
+                    raise FileNotFoundError(
+                        f"Demo SQLite database was not found: {demo_database_path.name}"
+                    )
+
+                demo_engine = create_engine(
+                    URL.create("sqlite", database=str(demo_database_path))
+                )
+                demo_schema = extract_schema(demo_engine, demo_database_path.stem)
+                schema_path = save_schema(demo_schema, demo_database_path.stem)
+                st.session_state.saved_database = {
+                    "mode": "Demo",
+                    "path": str(demo_database_path),
+                    "name": demo_database_path.stem,
+                }
+                st.success(
+                    f"Demo database saved for this session. "
+                    f"Schema saved to {schema_path.name}."
+                )
+            except Exception as error:
+                st.error(f"Could not save demo database: {error}")
+
+        if st.checkbox("Show Schema"):
+            st.json(schema)
+    else:
+        st.subheader("MySQL Database")
         st.text_input("Host", key="db_host")
         st.text_input("Port", key="db_port")
         st.text_input("User", key="db_user")
         st.text_input("Password", type="password", key="db_password")
         st.text_input("Database name", key="db_name")
 
-        if st.button("Save database settings"):
+        if st.button("Save database settings for this session"):
             try:
                 saved_database = {
                     "host": st.session_state.db_host,
@@ -308,6 +414,7 @@ with st.sidebar:
                 )
                 schema = extract_schema(schema_engine, saved_database["name"])
                 schema_path = save_schema(schema, saved_database["name"])
+                saved_database["mode"] = "Real Database"
                 st.session_state.saved_database = saved_database
                 st.success(
                     f"Database settings saved for this session. "
@@ -332,59 +439,16 @@ with st.sidebar:
                 st.json(schema)
             except Exception as error:
                 st.error(str(error))
+
+    saved_database = st.session_state.get("saved_database")
+    if saved_database:
+        st.caption(
+            f"Session-saved database: {saved_database['name']} "
+            f"({saved_database['mode']})"
+        )
     else:
+        st.caption("Database settings have not been saved for this session.")
 
-        st.header("AI Provider")
-
-        provider = st.selectbox(
-            "Choose a provider",
-            ["OpenAI", "Gemini", "Groq"],
-            key="provider"
-        )
-
-        model_state_key = f"model_name_{provider.lower()}"
-
-        if model_state_key not in st.session_state:
-            st.session_state[model_state_key] = default_models[provider]
-
-        ai_settings_page = st.radio(
-            "AI settings",
-            ["Add AI Keys", "Model Name"],
-            horizontal=True,
-            label_visibility="collapsed"
-        )
-
-        if ai_settings_page == "Add AI Keys":
-            api_key_name = {
-                "OpenAI": "OPENAI_API_KEY",
-                "Gemini": "GEMINI_API_KEY",
-                "Groq": "GROQ_API_KEY"
-            }[provider]
-
-            st.text_input(
-                f"{provider} API key",
-                type="password",
-                value=os.getenv(
-                    api_key_name,
-                    os.getenv("GOOGLE_API_KEY", "") if provider == "Gemini" else "",
-                ),
-                key=f"api_key_{provider.lower()}",
-                help="Your key is used for this Streamlit session and is not saved by the app."
-            )
-        else:
-            st.text_input(
-                "Model name",
-                key=model_state_key,
-                help=f"Default: {default_models[provider]}"
-            )
-
-provider = st.session_state.get("provider", "OpenAI")
-model_state_key = f"model_name_{provider.lower()}"
-if model_state_key not in st.session_state:
-    st.session_state[model_state_key] = default_models[provider]
-
-api_key = st.session_state.get(f"api_key_{provider.lower()}", "")
-model_name = st.session_state.get(model_state_key, default_models[provider])
 # ===========================
 # User Question
 # ===========================
@@ -402,44 +466,51 @@ if st.button("Generate SQL"):
 
         st.stop()
 
-    if not api_key.strip():
-
-        st.error(f"Enter a {provider} API key in the sidebar.")
-
+    saved_ai = st.session_state.get("saved_ai")
+    if not saved_ai:
+        st.error("Save AI settings in the sidebar before generating SQL.")
         st.stop()
 
-    if not model_name.strip():
-
-        st.error("Enter a model name in the Model Name section of the sidebar.")
-
-        st.stop()
-
-    try:
-        validate_model_for_provider(provider, model_name)
-    except ValueError as error:
-        st.error(str(error))
-        st.stop()
-
-    llm = create_llm(provider, api_key.strip(), model_name.strip())
-
-    try:
-        saved_database = st.session_state.get("saved_database")
-        if not saved_database:
-            st.error("Save valid database settings in the Database tab first.")
-            st.stop()
-
-        engine = create_database_engine(
-            saved_database["host"],
-            saved_database["port"],
-            saved_database["user"],
-            saved_database["password"],
-            saved_database["name"],
+    saved_database = st.session_state.get("saved_database")
+    if not saved_database or saved_database.get("mode") != app_mode:
+        st.error(
+            f"Save the {app_mode} database settings in the sidebar before generating SQL."
         )
-        schema = load_schema(saved_database["name"])
+        st.stop()
+
+    llm = create_llm(
+        saved_ai["provider"],
+        saved_ai["api_key"],
+        saved_ai["model_name"],
+    )
+
+    try:
+        if app_mode == "Real Database":
+            engine = create_database_engine(
+                saved_database["host"],
+                saved_database["port"],
+                saved_database["user"],
+                saved_database["password"],
+                saved_database["name"],
+            )
+            schema = load_schema(saved_database["name"])
+            sql_dialect = "MySQL"
+            dialect_rules = "Return valid MySQL SQL. Use MySQL syntax only."
+        else:
+            engine = create_engine(
+                URL.create("sqlite", database=saved_database["path"])
+            )
+            schema = load_schema(saved_database["name"])
+            sql_dialect = "SQLite"
+            dialect_rules = (
+                "Return valid SQLite SQL. Use SQLite syntax only. "
+                "Use LIMIT instead of TOP."
+            )
+
         schema_text = json.dumps(schema, indent=2)
 
         prompt = f"""
-You are an expert MySQL developer. Generate read-only queries only.
+You are an expert {sql_dialect} developer. Generate read-only queries only.
 
 Database Schema
 
@@ -451,11 +522,10 @@ Rules
 2. No explanation.
 3. Use only existing tables.
 4. Use only existing columns.
-5. Return valid MySQL SQL.
+5. {dialect_rules}
 6. Never wrap SQL inside markdown.
 7. Never use ```sql```.
 8. Output only SQL.
-9. Use MySQL syntax only.
 
 Question
 

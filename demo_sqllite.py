@@ -31,6 +31,21 @@ st.set_page_config(
 
 st.title("🗄️ Text-to-SQL Assistant (SQLite)")
 
+app_mode = st.radio(
+    "Choose a section",
+    ["Demo", "Real Database"],
+    horizontal=True,
+    key="database_mode"
+)
+
+if app_mode == "Real Database":
+    st.header("Real Database")
+    st.info(
+        "Real database connectivity is not configured in this demo. "
+        "Choose Demo to use the bundled SQLite database."
+    )
+    st.stop()
+
 # ===========================
 # Database Connection
 # ===========================
