@@ -1,0 +1,48 @@
+name: Text-to-SQL CI + Deploy in aws
+
+on:
+  # Build and publish the Docker image for pushes to any branch.
+  push:
+  pull_request:
+    branches: ["master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: shahil004/text_to_sql
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check Python Syntax
+        run: python -m compileall -q app main.py demo_sqllite.py
+
+      - name: Validate SQLite Database
+        run: |
+          python -c "import sqlite3; c=sqlite3.connect('uber.db'); result=c.execute('PRAGMA integrity_check').fetchone()[0]; c.close(); print('Database:', result); raise SystemExit(result != 'ok')"
+
+      - name: Build Docker Image
+        run: docker build -t "$IMAGE_NAME:v1.0" .
+
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Push Docker Image
+        if: github.event_name != 'pull_request'
+        run: docker push "$IMAGE_NAME:v1.0"
+

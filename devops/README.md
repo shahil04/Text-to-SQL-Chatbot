@@ -121,3 +121,25 @@ git pull
 bash setup_ubuntu.sh
 sudo systemctl restart text-to-sql
 ```
+
+## GitHub Actions Docker deployment
+
+The [Docker deployment workflow](../.github/workflows/docker-deploy.yml)
+builds the SQLite demo image and pushes it to Docker Hub for pushes to `master`.
+It deploys the image to EC2 after that push. A manual run from `master` also
+publishes and deploys. Pull requests to `master` run the syntax, database, and
+Docker build checks without publishing or deploying.
+
+Add these repository secrets in **Settings → Secrets and variables → Actions**:
+
+- `DOCKER_USERNAME` and `DOCKER_PASSWORD` — Docker Hub credentials.
+- `EC2_HOST`, `EC2_USER`, and `EC2_KEY` — the EC2 host, SSH username, and
+  private key. The matching public key must be authorized on the instance.
+
+The workflow publishes `shahil004/text-to-sql-chatbot:latest`; change
+`IMAGE_NAME` in the workflow if your Docker Hub namespace or repository name
+differs. The Docker Hub image must be public, or the EC2 instance must already
+be authenticated to Docker Hub to pull it. The container port is published on
+EC2's localhost (`127.0.0.1:8501`) so it is not directly exposed to the
+internet. Configure an authenticated HTTPS reverse proxy on the instance to
+provide remote access, as described above.

@@ -140,6 +140,18 @@ Demo mode uses the `uber.db` file in the project root. To recreate it if it is m
 python sql_lite_datacreate.py
 ```
 
+### Run the SQLite demo with Docker
+
+From the project root, build and start the container:
+
+```bash
+docker build -t text-to-sql-sqlite-demo .
+docker run --rm -p 8501:8501 text-to-sql-sqlite-demo
+```
+
+Open `http://localhost:8501`. The image includes `demo_sqllite.py` and the
+bundled `uber.db`; enter your AI provider key in the app sidebar to generate SQL.
+
 ### Use Real Database mode
 
 1. Select **Real Database** at the top of the app.
