@@ -1,4 +1,4 @@
-name: Text-to-SQL CI + Deploy in aws
+name: Text-to-SQL CI docker create and push automation
 
 on:
   # Build and publish the Docker image for pushes to any branch.
